@@ -1,7 +1,8 @@
-# Shadow of War Compatibility
+# SowCompat
 
-Open-source, fail-closed compatibility launcher for the Microsoft Store/Xbox
-app version of *Middle-earth: Shadow of War* on Windows 10/11 x64.
+**SowCompat** is an open-source, fail-closed compatibility launcher for the
+Microsoft Store/Xbox app version of *Middle-earth: Shadow of War* on Windows
+10/11 x64.
 
 The tool works around one reviewed legacy Store-account call that prevents the
 game from reaching its normal Xbox Game Save provider. It changes five bytes

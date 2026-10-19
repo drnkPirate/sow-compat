@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -51,7 +52,7 @@ namespace SowCompat
 
     internal sealed class MainWindow : Form
     {
-        private const string UiVersion = "10.0.0-preview.1";
+        private const string UiVersion = "10.0.0-preview.2";
         private readonly Color Navy = Color.FromArgb(24, 35, 50);
         private readonly Color Blue = Color.FromArgb(29, 103, 192);
         private readonly Color Green = Color.FromArgb(25, 135, 84);
@@ -83,6 +84,7 @@ namespace SowCompat
 
         private Process currentProcess;
         private bool busy;
+        private string lastOperationOutput = String.Empty;
 
         internal MainWindow()
         {
@@ -202,7 +204,7 @@ namespace SowCompat
             backupsButton.Click += delegate { OpenFolder(backupRoot, "No backups have been created yet."); };
             content.Controls.Add(backupsButton);
 
-            supportButton = CreateButton("Support report", Color.White, Navy, 615, 148, 140, 44);
+            supportButton = CreateButton("Create support ZIP", Color.White, Navy, 615, 148, 140, 44);
             supportButton.FlatAppearance.BorderColor = Color.FromArgb(190, 198, 208);
             supportButton.Click += SupportButtonClick;
             content.Controls.Add(supportButton);
@@ -350,11 +352,47 @@ namespace SowCompat
 
         private async void SupportButtonClick(object sender, EventArgs e)
         {
-            int result = await RunScriptAsync("-ExportSupportBundle", "Creating a redacted support report…");
-            if (result == 0)
+            DateTime startedUtc = DateTime.UtcNow;
+            string temporaryLog = null;
+            string action = "-ExportSupportBundle";
+            try
             {
-                SetStatus(Green, "Support report created", "The report excludes paths, account IDs, tokens, save names, hashes, and contents.");
-                OpenFolder(supportRoot, null);
+                if (!String.IsNullOrWhiteSpace(lastOperationOutput))
+                {
+                    temporaryLog = Path.Combine(Path.GetTempPath(),
+                        "SowCompat-activity-" + Guid.NewGuid().ToString("N") + ".txt");
+                    File.WriteAllText(temporaryLog, RedactSupportText(lastOperationOutput),
+                        new UTF8Encoding(false));
+                    action += " -ActivityLogPath \"" + temporaryLog.Replace("\"", "\"\"") + "\"";
+                }
+                int result = await RunScriptAsync(action, "Creating a privacy-redacted support ZIP…");
+                if (result != 0) return;
+
+                string newestBundle = FindNewestSupportBundle(startedUtc.AddSeconds(-5));
+                SetStatus(Green, "Support ZIP ready",
+                    "Review the ZIP, then drag it into a GitHub bug report. Nothing was uploaded automatically.");
+                if (newestBundle != null)
+                {
+                    OpenFileInFolder(newestBundle);
+                    MessageBox.Show(this,
+                        "The privacy-redacted support ZIP is selected in File Explorer.\n\n" +
+                        "Review it if you want, then drag the ZIP into a new bug report at:\n" +
+                        "https://github.com/sacrezm/sow-compat/issues/new?template=bug_report.yml\n\n" +
+                        "Nothing was uploaded automatically.",
+                        "Support ZIP ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    OpenFolder(supportRoot, null);
+                }
+            }
+            finally
+            {
+                if (temporaryLog != null)
+                {
+                    try { if (File.Exists(temporaryLog)) File.Delete(temporaryLog); }
+                    catch { }
+                }
             }
         }
 
@@ -426,6 +464,8 @@ namespace SowCompat
             }
 
             AppendLog("Exit code: " + exitCode);
+            if (!action.StartsWith("-ExportSupportBundle", StringComparison.Ordinal))
+                lastOperationOutput = runOutput.ToString();
             if (exitCode != 0) ShowFriendlyFailure(runOutput.ToString());
             else if (action == "-CheckOnly")
                 SetStatus(Green, "All checks passed", "The installed package is supported and local prerequisites are ready.");
@@ -503,6 +543,74 @@ namespace SowCompat
             Process.Start(new ProcessStartInfo {
                 FileName = "explorer.exe",
                 Arguments = "\"" + path + "\"",
+                UseShellExecute = true
+            });
+        }
+
+        private static string RedactSupportText(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return String.Empty;
+            string safe = text.Replace("\0", String.Empty);
+            string[] knownValues = {
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                Environment.UserName,
+                Environment.MachineName
+            };
+            string[] replacements = { "%USERPROFILE%", "%LOCALAPPDATA%", "%DESKTOP%", "<USER>", "<COMPUTER>" };
+            for (int index = 0; index < knownValues.Length; index++)
+            {
+                if (!String.IsNullOrWhiteSpace(knownValues[index]))
+                    safe = Regex.Replace(safe, Regex.Escape(knownValues[index]), replacements[index],
+                        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            }
+            safe = Regex.Replace(safe,
+                @"^.*\b(?:authorization|bearer|token|password|secret|cookie)\b.*$",
+                "<REDACTED_SENSITIVE_LINE>", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+            safe = Regex.Replace(safe, "\\b[A-Z]:\\\\[^\\r\\n\\\"'<>|]*", "<PATH>", RegexOptions.IgnoreCase);
+            safe = Regex.Replace(safe, "\\\\\\\\[^\\r\\n\\\"'<>|]*", "<UNC_PATH>");
+            safe = Regex.Replace(safe, @"\bS-\d-\d+(?:-\d+){1,}\b", "<SID>");
+            safe = Regex.Replace(safe, @"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+                "<EMAIL>", RegexOptions.IgnoreCase);
+            safe = Regex.Replace(safe, @"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<IP_ADDRESS>");
+            safe = Regex.Replace(safe,
+                @"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+                "<GUID>", RegexOptions.IgnoreCase);
+            safe = Regex.Replace(safe, @"\b[0-9a-f]{32,128}\b", "<REDACTED_HEX>", RegexOptions.IgnoreCase);
+            safe = Regex.Replace(safe, @"\b\d{10,20}\b", "<ACCOUNT_ID>");
+            safe = Regex.Replace(safe, @"[^\u0009\u000A\u000D\u0020-\u007E]", "?");
+            if (safe.Length > 65536)
+                safe = "[Earlier output omitted; final 65536 characters retained.]\r\n" +
+                    safe.Substring(safe.Length - 65536);
+            return safe.Trim();
+        }
+
+        private string FindNewestSupportBundle(DateTime notBeforeUtc)
+        {
+            if (!Directory.Exists(supportRoot)) return null;
+            string newest = null;
+            DateTime newestWrite = DateTime.MinValue;
+            foreach (string path in Directory.GetFiles(supportRoot, "SowCompat-support-*.zip",
+                SearchOption.TopDirectoryOnly))
+            {
+                FileInfo file = new FileInfo(path);
+                if ((file.Attributes & FileAttributes.ReparsePoint) != 0 || file.LastWriteTimeUtc < notBeforeUtc)
+                    continue;
+                if (file.LastWriteTimeUtc > newestWrite)
+                {
+                    newest = file.FullName;
+                    newestWrite = file.LastWriteTimeUtc;
+                }
+            }
+            return newest;
+        }
+
+        private void OpenFileInFolder(string path)
+        {
+            Process.Start(new ProcessStartInfo {
+                FileName = "explorer.exe",
+                Arguments = "/select,\"" + path + "\"",
                 UseShellExecute = true
             });
         }

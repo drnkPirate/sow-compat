@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^[0-9A-Za-z][0-9A-Za-z.-]*$')]
-    [string]$Version = '10.0.0-preview.1',
+    [string]$Version = '10.0.0-preview.2',
     [string]$OutputDirectory
 )
 
@@ -43,6 +43,7 @@ $releaseFiles = @(
     'PREPARE-ONLY.cmd',
     'RECOVER.cmd',
     'README.md',
+    'SUPPORT.md',
     'LICENSE',
     'NOTICE.md',
     'SECURITY.md',
@@ -81,7 +82,7 @@ try {
         throw 'Output directory must not be the repository root.'
     }
     [void][IO.Directory]::CreateDirectory($output)
-    $zipName = "Shadow-of-War-Compatibility-$Version-win-x64.zip"
+    $zipName = "SowCompat-$Version-win-x64.zip"
     $zipPath = Join-Path $output $zipName
     if (Test-Path -LiteralPath $zipPath) { throw "Release archive already exists: $zipPath" }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath -CompressionLevel Optimal

@@ -27,7 +27,7 @@ jobs:
       - name: Upload the Windows preview package
         uses: actions/upload-artifact@v7
         with:
-          name: shadow-of-war-compatibility-windows-preview
+          name: sowcompat-windows-preview
           path: |
             release/*.zip
             release/*.sha256

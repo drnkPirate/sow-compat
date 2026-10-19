@@ -45,8 +45,11 @@ installed under `%LOCALAPPDATA%\SowCompat\app` and a
 `Shadow of War Compatibility` shortcut is added to the current user's desktop.
 No administrator access is required.
 
-The GUI also exposes **Prepare backup**, **Recover**, **Backups**, and a
-privacy-redacted **Support report**. Recovery is enabled only when an owned,
+The GUI also exposes **Prepare backup**, **Recover**, **Backups**, and
+**Create support ZIP**. The support ZIP combines a structured environment
+report, a privacy-redacted copy of the last operation output, recent run-state
+summaries, and simple sharing instructions. Nothing is uploaded automatically.
+See [SUPPORT.md](SUPPORT.md). Recovery is enabled only when an owned,
 unfinished journal exists.
 
 ## Advanced command-line use
@@ -89,7 +92,7 @@ device transfer must be verified separately, without simultaneous PC/Xbox play.
 | `-PrepareOnly` | Check plus verified pre-run backup |
 | `-Play` | Full guarded session |
 | `-Recover` | Recover an owned unresolved package-debug journal |
-| `-ExportSupportBundle` | Create a redacted local JSON diagnostic |
+| `-ExportSupportBundle` | Create a privacy-redacted support ZIP locally |
 | `-Install` | Per-user install and desktop launcher |
 | `-Uninstall` | Remove app/launcher; preserve backups and evidence |
 
@@ -130,9 +133,10 @@ automatically.
 
 ## Privacy and support
 
-Backups stay under `%LOCALAPPDATA%\SowCompat\backups`. Support bundles contain
-counts and health state only—never XUID-like paths, tokens, save names, hashes,
-or contents. See [SECURITY.md](SECURITY.md) for private vulnerability reports
-and [THREAT-MODEL.md](THREAT-MODEL.md) for trust boundaries.
+Backups stay under `%LOCALAPPDATA%\SowCompat\backups`. Support bundles exclude
+paths, user and computer names, account identifiers, tokens, IP addresses,
+save names, save hashes, and save contents. Review a ZIP before attaching it to
+a public issue. See [SUPPORT.md](SUPPORT.md), [SECURITY.md](SECURITY.md), and
+[THREAT-MODEL.md](THREAT-MODEL.md).
 
 License: MIT. See [NOTICE.md](NOTICE.md) for trademark and affiliation terms.

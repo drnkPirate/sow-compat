@@ -6,6 +6,7 @@ param(
     [Parameter(ParameterSetName = 'Recover')][switch]$Recover,
     [Parameter(ParameterSetName = 'SelfTest')][switch]$SelfTest,
     [Parameter(ParameterSetName = 'Support')][switch]$ExportSupportBundle,
+    [Parameter(ParameterSetName = 'Support')][string]$ActivityLogPath,
     [Parameter(ParameterSetName = 'Install')][switch]$Install,
     [Parameter(ParameterSetName = 'Uninstall')][switch]$Uninstall,
     [Parameter(ParameterSetName = 'Play')]
@@ -17,7 +18,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$script:ToolVersion = '10.0.0-preview.1'
+$script:ToolVersion = '10.0.0-preview.2'
 $script:BaseRoot = Join-Path $env:LOCALAPPDATA 'SowCompat'
 $script:BackupRoot = Join-Path $script:BaseRoot 'backups'
 $script:SupportRoot = Join-Path $script:BaseRoot 'support'
@@ -426,13 +427,209 @@ function Invoke-Recovery {
     if ($exit -ne 0) { throw "SOWC_RECOVERY_FAILED: $exit" }; Write-Host 'RECOVERY_OK' -ForegroundColor Green
 }
 
+function ConvertTo-SafeSupportText {
+    param([AllowEmptyString()][string]$Text)
+    if ($null -eq $Text) { return '' }
+    $safe = $Text.Replace("`0", '')
+    $knownValues = @(
+        @([Environment]::GetFolderPath('UserProfile'), '%USERPROFILE%'),
+        @([Environment]::GetFolderPath('LocalApplicationData'), '%LOCALAPPDATA%'),
+        @([Environment]::GetFolderPath('Desktop'), '%DESKTOP%'),
+        @($PSScriptRoot, '<APP_ROOT>'),
+        @([Environment]::UserName, '<USER>'),
+        @([Environment]::MachineName, '<COMPUTER>')
+    )
+    foreach ($entry in $knownValues) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry[0])) {
+            $safe = [regex]::Replace($safe, [regex]::Escape([string]$entry[0]),
+                [string]$entry[1], [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        }
+    }
+    $safe = [regex]::Replace($safe, '(?im)^.*\b(?:authorization|bearer|token|password|secret|cookie)\b.*$', '<REDACTED_SENSITIVE_LINE>')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^\r\n"''<>|]*', '<PATH>')
+    $safe = [regex]::Replace($safe, '(?m)\\\\[^\r\n"''<>|]*', '<UNC_PATH>')
+    $safe = [regex]::Replace($safe, '\bS-\d-\d+(?:-\d+){1,}\b', '<SID>')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '<EMAIL>')
+    $safe = [regex]::Replace($safe, '\b(?:\d{1,3}\.){3}\d{1,3}\b', '<IP_ADDRESS>')
+    $safe = [regex]::Replace($safe, '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', '<GUID>')
+    $safe = [regex]::Replace($safe, '(?i)\b[0-9a-f]{32,128}\b', '<REDACTED_HEX>')
+    $safe = [regex]::Replace($safe, '\b\d{10,20}\b', '<ACCOUNT_ID>')
+    $safe = [regex]::Replace($safe, '[^\u0009\u000A\u000D\u0020-\u007E]', '?')
+    if ($safe.Length -gt 65536) {
+        $safe = "[Earlier output omitted; final 65536 characters retained.]`r`n" +
+            $safe.Substring($safe.Length - 65536)
+    }
+    return $safe.Trim()
+}
+
+function Get-SafeJournalSummary {
+    $summary = [ordered]@{ present = $false; stage = $null; last_hresult = $null }
+    $journalPath = Join-Path $script:BaseRoot 'active.journal'
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) { return $summary }
+    $summary.present = $true
+    try {
+        Assert-RegularFile -Path $journalPath
+        $item = Get-Item -LiteralPath $journalPath -Force
+        if ($item.Length -gt 32768) { throw 'journal too large' }
+        foreach ($line in [IO.File]::ReadAllLines($journalPath, [Text.Encoding]::UTF8)) {
+            if ($line -match '^stage=([a-z0-9_]+)$') { $summary.stage = $matches[1] }
+            elseif ($line -match '^last_hr=([0-9A-Fa-f]{8})$') { $summary.last_hresult = $matches[1].ToUpperInvariant() }
+        }
+    } catch {
+        $summary.stage = 'unreadable'
+    }
+    return $summary
+}
+
+function Get-SafeRunEvidenceSummary {
+    $items = New-Object 'Collections.Generic.List[object]'
+    if (-not (Test-Path -LiteralPath $script:BaseRoot -PathType Container)) { return @() }
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:BaseRoot -Directory -Force |
+            Where-Object { $_.Name -cmatch '^r-[0-9a-f]{16}$' -and
+                (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) } |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 5)) {
+        try {
+            $files = @(Get-ChildItem -LiteralPath $directory.FullName -File -Force -ErrorAction Stop |
+                Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 })
+            $gate = @($files | Where-Object { $_.Name -ceq 'g.exe' } | Select-Object -First 1)
+            $gateIntegrity = $null
+            if ($gate.Count -eq 1) {
+                $gateIntegrity = ((Get-FileHash -LiteralPath $gate[0].FullName -Algorithm SHA256).Hash -ceq
+                    $script:ExpectedGateSha256)
+            }
+            $items.Add([ordered]@{
+                last_write_utc = $directory.LastWriteTimeUtc.ToString('o')
+                file_count = $files.Count
+                result_present = (@($files | Where-Object { $_.Name -cmatch '^result-[0-9a-f]{32}\.txt$' }).Count -gt 0)
+                claim_present = (@($files | Where-Object { $_.Name -cmatch '^result-[0-9a-f]{32}\.txt\.claim$' }).Count -gt 0)
+                recovery_receipt_count = @($files | Where-Object { $_.Name -cmatch '^recovery-[0-9a-f]{32}\.receipt$' }).Count
+                staged_gate_integrity_ok = $gateIntegrity
+            })
+        } catch {
+            $items.Add([ordered]@{ last_write_utc = $directory.LastWriteTimeUtc.ToString('o'); unreadable = $true })
+        }
+    }
+    return $items.ToArray()
+}
+
 function Write-SupportBundle {
-    Initialize-PrivateRoot;if(-not(Test-Path -LiteralPath $script:SupportRoot)){[void](New-Item -ItemType Directory -Path $script:SupportRoot);Set-PrivateDirectoryAcl $script:SupportRoot}
-    $profileId=$null;$packageVersion=$null;$wgs=$null;$errorCode=$null
-    try{$selection=Select-InstalledProfile;$profileId=[string]$selection.Profile.Data.id;$packageVersion=[string]$selection.Package.Version;$wgs=Get-SafeWgsSnapshot}catch{$errorCode=($_.Exception.Message-split':')[0]}
-    $services=[ordered]@{};foreach($name in @('GamingServices','GamingServicesNet','XblAuthManager','XblGameSave')){try{$s=Get-Service $name;$services[$name]="Status=$($s.Status);StartType=$($s.StartType)"}catch{$services[$name]='Unavailable'}}
-    $data=[ordered]@{schema=1;tool_version=$script:ToolVersion;generated_utc=[DateTime]::UtcNow.ToString('o');windows_build=[Environment]::OSVersion.Version.ToString();profile_id=$profileId;package_version=$packageVersion;package_process_running=(@(Get-Process ShadowOfWar -ErrorAction SilentlyContinue).Count-gt0);network_available=[Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable();services=$services;unresolved_journal=(Test-Path -LiteralPath (Join-Path $script:BaseRoot 'active.journal'));wgs_root_exists=if($null-eq$wgs){$null}else{[bool]$wgs.RootExists};wgs_file_count=if($null-eq$wgs){$null}else{[int]$wgs.Files.Count};wgs_total_bytes=if($null-eq$wgs){$null}else{[uint64]$wgs.TotalBytes};detection_error=$errorCode;privacy='No paths, account identifiers, tokens, save hashes, save names, or save contents included.'}
-    $path=Join-Path $script:SupportRoot ('support-'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+'.json');[IO.File]::WriteAllText($path,($data|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)));Write-Host "SUPPORT_BUNDLE_OK: $path" -ForegroundColor Green
+    Initialize-PrivateRoot
+    if (-not (Test-Path -LiteralPath $script:SupportRoot -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $script:SupportRoot)
+    }
+    Set-PrivateDirectoryAcl $script:SupportRoot
+
+    $activityText = ''
+    if (-not [string]::IsNullOrWhiteSpace($ActivityLogPath)) {
+        $activityFullPath = [IO.Path]::GetFullPath($ActivityLogPath)
+        Assert-RegularFile -Path $activityFullPath
+        $activityItem = Get-Item -LiteralPath $activityFullPath -Force
+        if ($activityItem.Length -gt 1MB) { throw 'SOWC_SUPPORT_ACTIVITY_LOG_TOO_LARGE' }
+        $activityText = ConvertTo-SafeSupportText ([IO.File]::ReadAllText($activityFullPath, [Text.Encoding]::UTF8))
+    }
+
+    $profileId = $null
+    $packageVersion = $null
+    $wgs = $null
+    $detectionError = $null
+    try {
+        $selection = Select-InstalledProfile
+        $profileId = [string]$selection.Profile.Data.id
+        $packageVersion = [string]$selection.Package.Version
+        $wgs = Get-SafeWgsSnapshot
+    } catch {
+        $detectionError = ConvertTo-SafeSupportText (($_.Exception.Message -split ':')[0])
+    }
+
+    $services = [ordered]@{}
+    foreach ($name in @('GamingServices', 'GamingServicesNet', 'XblAuthManager', 'XblGameSave')) {
+        try {
+            $service = Get-Service $name
+            $services[$name] = [ordered]@{ status = [string]$service.Status; start_type = [string]$service.StartType }
+        } catch {
+            $services[$name] = [ordered]@{ status = 'Unavailable'; start_type = $null }
+        }
+    }
+
+    $errorCodes = @()
+    if (-not [string]::IsNullOrWhiteSpace($activityText)) {
+        $errorCodes = @([regex]::Matches($activityText, '\b(?:SOWC|GATE)_[A-Z0-9_]+\b') |
+            ForEach-Object { $_.Value } | Sort-Object -Unique)
+    }
+    $journal = Get-SafeJournalSummary
+    $runEvidence = @(Get-SafeRunEvidenceSummary)
+    $bundleId = [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $generated = [DateTime]::UtcNow
+    $data = [ordered]@{
+        schema = 2
+        bundle_id = $bundleId
+        tool_version = $script:ToolVersion
+        generated_utc = $generated.ToString('o')
+        windows_build = [Environment]::OSVersion.Version.ToString()
+        os_64_bit = [Environment]::Is64BitOperatingSystem
+        process_64_bit = [Environment]::Is64BitProcess
+        powershell_version = $PSVersionTable.PSVersion.ToString()
+        elevated = Test-IsElevatedAdministrator
+        profile_id = $profileId
+        package_version = $packageVersion
+        package_process_running = (@(Get-Process ShadowOfWar -ErrorAction SilentlyContinue).Count -gt 0)
+        network_available = [Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable()
+        services = $services
+        journal = $journal
+        recent_run_evidence = $runEvidence
+        wgs_root_exists = if ($null -eq $wgs) { $null } else { [bool]$wgs.RootExists }
+        wgs_file_count = if ($null -eq $wgs) { $null } else { [int]$wgs.Files.Count }
+        wgs_total_bytes = if ($null -eq $wgs) { $null } else { [uint64]$wgs.TotalBytes }
+        detection_error = $detectionError
+        activity_log_included = (-not [string]::IsNullOrWhiteSpace($activityText))
+        detected_error_codes = $errorCodes
+        privacy = 'No paths, user or computer names, account identifiers, tokens, IP addresses, save names, save hashes, or save contents are included.'
+    }
+
+    $stage = Join-Path $script:SupportRoot ('.stage-' + [Guid]::NewGuid().ToString('N'))
+    $zipName = 'SowCompat-support-{0}Z-{1}.zip' -f $generated.ToString('yyyyMMdd-HHmmss'), $bundleId
+    $zipPath = Join-Path $script:SupportRoot $zipName
+    $partialZip = $zipPath + '.partial'
+    [void](New-Item -ItemType Directory -Path $stage)
+    Set-PrivateDirectoryAcl $stage
+    try {
+        $utf8 = New-Object Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText((Join-Path $stage 'support-report.json'),
+            ($data | ConvertTo-Json -Depth 8), $utf8)
+        if (-not [string]::IsNullOrWhiteSpace($activityText)) {
+            [IO.File]::WriteAllText((Join-Path $stage 'activity-log.txt'), $activityText + "`r`n", $utf8)
+        }
+        $instructions = @'
+SowCompat support bundle
+========================
+
+1. You may inspect every file in this ZIP before sharing it.
+2. Open https://github.com/sacrezm/sow-compat/issues/new?template=bug_report.yml
+3. Describe what happened and drag this ZIP into the issue.
+4. Never attach Xbox save files, WGS folders, screenshots containing account data,
+   authentication tokens, or files from WindowsApps.
+
+Nothing was uploaded automatically. This bundle intentionally excludes paths,
+user and computer names, account identifiers, tokens, IP addresses, save names,
+save hashes, and save contents.
+'@
+        [IO.File]::WriteAllText((Join-Path $stage 'HOW-TO-SHARE.txt'), $instructions.Trim() + "`r`n", $utf8)
+        $manifest = New-Object 'Collections.Generic.List[string]'
+        foreach ($file in @(Get-ChildItem -LiteralPath $stage -File | Sort-Object Name)) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $manifest.Add("$hash  $($file.Name)")
+        }
+        [IO.File]::WriteAllLines((Join-Path $stage 'BUNDLE-SHA256SUMS.txt'), $manifest, $utf8)
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::CreateFromDirectory($stage, $partialZip,
+            [IO.Compression.CompressionLevel]::Optimal, $false)
+        Move-Item -LiteralPath $partialZip -Destination $zipPath
+    } finally {
+        if (Test-Path -LiteralPath $partialZip -PathType Leaf) { Remove-Item -LiteralPath $partialZip -Force }
+        if (Test-Path -LiteralPath $stage -PathType Container) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    }
+    Write-Host "SUPPORT_BUNDLE_OK: $zipPath" -ForegroundColor Green
+    Write-Host 'Nothing was uploaded. Review the ZIP, then attach it to a GitHub bug report.'
 }
 
 function Invoke-Install {
@@ -467,7 +664,11 @@ function Invoke-SelfTest {
         [IO.File]::WriteAllBytes((Join-Path $nested 'payload'),[byte[]](0,1,2,4,255));$changed=Get-SafeWgsSnapshot -Root $fixture;if(Test-SameSnapshot $one $changed){throw 'SOWC_SELFTEST_MUTATION_NOT_DETECTED'}
         $profileText=[IO.File]::ReadAllText($profiles[0].Path,[Text.Encoding]::UTF8)+' ';$sha=[Security.Cryptography.SHA256]::Create();try{$tampered=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($profileText))).Replace('-','')}finally{$sha.Dispose()};if($tampered-ceq$profiles[0].Hash){throw 'SOWC_SELFTEST_PROFILE_TAMPER'}
     }finally{if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}}
-    Write-Host 'SELFTEST_OK: native, profile-integrity, empty/multi-tree/Unicode WGS and mutation tests passed; no package or live WGS changed.' -ForegroundColor Green
+    $redactionFixture="SOWC_TEST_FAILURE C:\Users\Private\file.txt`nuser@example.com`nS-1-5-21-111-222-333-1001`n1234567890123456`n192.168.1.9`n0123456789abcdef0123456789abcdef"
+    $redacted=ConvertTo-SafeSupportText $redactionFixture
+    foreach($secret in @('C:\Users\Private','user@example.com','S-1-5-21-111-222-333-1001','1234567890123456','192.168.1.9','0123456789abcdef0123456789abcdef')){if($redacted.Contains($secret)){throw 'SOWC_SELFTEST_SUPPORT_REDACTION_LEAK'}}
+    foreach($expected in @('SOWC_TEST_FAILURE','<PATH>','<EMAIL>','<SID>','<ACCOUNT_ID>','<IP_ADDRESS>','<REDACTED_HEX>')){if(-not$redacted.Contains($expected)){throw "SOWC_SELFTEST_SUPPORT_REDACTION_MISSING: $expected"}}
+    Write-Host 'SELFTEST_OK: native, profile-integrity, WGS mutation, and support-redaction tests passed; no package or live WGS changed.' -ForegroundColor Green
 }
 
 if($Install){Invoke-Install;exit 0};if($Uninstall){Invoke-Uninstall;exit 0};if($SelfTest){Invoke-SelfTest;exit 0};if($ExportSupportBundle){Write-SupportBundle;exit 0}

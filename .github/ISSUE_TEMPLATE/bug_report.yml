@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a SowCompat failure or unexpected result
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve SowCompat. Please do not upload save files, WGS folders, account identifiers, tokens, or files from WindowsApps.
+
+  - type: input
+    id: version
+    attributes:
+      label: SowCompat version
+      description: Shown at the top-right of the application.
+      placeholder: 10.0.0-preview.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the visible result and any error code shown by SowCompat.
+      placeholder: Tell us what you expected and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Opened SowCompat
+        2. Clicked ...
+        3. Saw ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: action
+    attributes:
+      label: Action that failed
+      options:
+        - Check & Play
+        - Prepare backup
+        - Recover
+        - Install shortcut
+        - Create support ZIP
+        - Command-line operation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: support_bundle
+    attributes:
+      label: Privacy-redacted support ZIP
+      description: Click Create support ZIP in SowCompat, then drag the resulting ZIP here. You may inspect it first. Nothing is uploaded automatically.
+      placeholder: Drag SowCompat-support-*.zip here, or explain why it could not be created.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checklist
+      options:
+        - label: I did not attach Xbox/WGS save files, account identifiers, tokens, or files from WindowsApps.
+          required: true
+        - label: I ran SowCompat as a normal user, not with Run as administrator.
+          required: true

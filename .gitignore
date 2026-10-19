@@ -1,0 +1,13 @@
+/build/
+/release/
+/*.obj
+/*.pdb
+/*.ilk
+/g.repro.exe
+/SowCompat.repro.exe
+/build-test-a/
+/build-test-b/
+/v9-reference-g.exe
+*.log
+support-*.json
+*.zip

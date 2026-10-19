@@ -1,0 +1,34 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run inert native and GUI tests
+        shell: cmd
+        run: BUILD.cmd
+      - name: Parse PowerShell and validate profile JSON
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile(
+            "$pwd\sow_compat.ps1", [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          Get-Content .\profiles\*.json -Raw | ConvertFrom-Json | Out-Null
+      - name: Package the verified Windows release
+        shell: powershell
+        run: .\PACK-RELEASE.ps1
+      - name: Upload the Windows preview package
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-of-war-compatibility-windows-preview
+          path: |
+            release/*.zip
+            release/*.sha256
+          if-no-files-found: error

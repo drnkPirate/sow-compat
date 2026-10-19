@@ -43,6 +43,7 @@ $releaseFiles = @(
     'PREPARE-ONLY.cmd',
     'RECOVER.cmd',
     'README.md',
+    'USER-GUIDE.md',
     'SUPPORT.md',
     'LICENSE',
     'NOTICE.md',

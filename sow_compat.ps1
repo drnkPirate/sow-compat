@@ -604,7 +604,7 @@ SowCompat support bundle
 ========================
 
 1. You may inspect every file in this ZIP before sharing it.
-2. Open https://github.com/sacrezm/sow-compat/issues/new?template=bug_report.yml
+2. Open https://github.com/drnkPirate/sow-compat/issues/new?template=bug_report.yml
 3. Describe what happened and drag this ZIP into the issue.
 4. Never attach Xbox save files, WGS folders, screenshots containing account data,
    authentication tokens, or files from WindowsApps.

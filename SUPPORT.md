@@ -9,7 +9,7 @@ attached to a public GitHub bug report.
 2. Click **Create support ZIP**.
 3. Wait for File Explorer to select the new `SowCompat-support-*.zip` file.
 4. You may open and inspect the ZIP before sharing it.
-5. Create a [bug report](https://github.com/sacrezm/sow-compat/issues/new?template=bug_report.yml)
+5. Create a [bug report](https://github.com/drnkPirate/sow-compat/issues/new?template=bug_report.yml)
    and drag the ZIP into the report.
 
 Nothing is uploaded automatically. The ZIP contains a structured system and
@@ -44,5 +44,5 @@ Never attach any of the following to a public issue:
 - the private `active.journal` file or complete run directories.
 
 For a suspected security vulnerability, use
-[GitHub private vulnerability reporting](https://github.com/sacrezm/sow-compat/security/advisories/new)
+[GitHub private vulnerability reporting](https://github.com/drnkPirate/sow-compat/security/advisories/new)
 instead of a public issue.

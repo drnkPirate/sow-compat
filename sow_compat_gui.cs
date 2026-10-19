@@ -377,7 +377,7 @@ namespace SowCompat
                     MessageBox.Show(this,
                         "The privacy-redacted support ZIP is selected in File Explorer.\n\n" +
                         "Review it if you want, then drag the ZIP into a new bug report at:\n" +
-                        "https://github.com/sacrezm/sow-compat/issues/new?template=bug_report.yml\n\n" +
+                        "https://github.com/drnkPirate/sow-compat/issues/new?template=bug_report.yml\n\n" +
                         "Nothing was uploaded automatically.",
                         "Support ZIP ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }

@@ -27,6 +27,10 @@ signature scan or “best effort” patch path.
 
 ## Quick start
 
+Not comfortable with technical instructions? Follow the plain-language
+[Beginner's guide](USER-GUIDE.md). It explains downloading, extracting,
+starting the app, playing, and reporting a problem step by step.
+
 1. Download the release ZIP from GitHub and extract the complete folder.
 2. In the Xbox app, create exactly one desktop shortcut for *Shadow of War*.
 3. Double-click **SowCompat.exe** as a normal user. Do not use

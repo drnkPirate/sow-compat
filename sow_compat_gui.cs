@@ -52,7 +52,7 @@ namespace SowCompat
 
     internal sealed class MainWindow : Form
     {
-        private const string UiVersion = "10.0.0-preview.2";
+        private const string UiVersion = "10.0.0-preview.3";
         private readonly Color Navy = Color.FromArgb(24, 35, 50);
         private readonly Color Blue = Color.FromArgb(29, 103, 192);
         private readonly Color Green = Color.FromArgb(25, 135, 84);
@@ -479,6 +479,10 @@ namespace SowCompat
                 SetStatus(Red, "Unsupported game build", "Nothing was changed. A reviewed profile is required for this exact version.");
             else if (output.Contains("SOWC_PACKAGE_NOT_INSTALLED"))
                 SetStatus(Red, "Game not found", "Install the official Microsoft Store / Xbox app edition first.");
+            else if (output.Contains("SOWC_PACKAGE_STATUS_INCONSISTENT"))
+                SetStatus(Red, "Windows package status is inconsistent", "Use Windows Repair for the game, then create a support ZIP if this continues.");
+            else if (output.Contains("SOWC_PACKAGE_STATUS_NOT_OK") || output.Contains("SOWC_PACKAGE_STATUS_NOT_FOUND"))
+                SetStatus(Red, "Windows package is not ready", "Repair or update the game in Windows/Xbox, then try again.");
             else if (output.Contains("SOWC_GAME_SHORTCUT_AMBIGUOUS_OR_MISSING"))
                 SetStatus(Red, "Official game shortcut needed", "Create exactly one desktop shortcut from the Xbox app, then try again.");
             else if (output.Contains("SOWC_RECOVERY_REQUIRED"))

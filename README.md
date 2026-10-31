@@ -52,7 +52,9 @@ No administrator access is required.
 The GUI also exposes **Prepare backup**, **Recover**, **Backups**, and
 **Create support ZIP**. The support ZIP combines a structured environment
 report, a privacy-redacted copy of the last operation output, recent run-state
-summaries, and simple sharing instructions. Nothing is uploaded automatically.
+summaries, Windows package/dependency diagnostics, relevant event IDs/HRESULTs,
+and simple sharing instructions. Event messages are excluded and nothing is
+uploaded automatically.
 See [SUPPORT.md](SUPPORT.md). Recovery is enabled only when an owned,
 unfinished journal exists.
 

@@ -15,7 +15,14 @@ attached to a public GitHub bug report.
 Nothing is uploaded automatically. The ZIP contains a structured system and
 game-readiness report, the redacted output of the last GUI operation when
 available, recent run-state summaries, sharing instructions, and checksums for
-the files inside the bundle.
+the files inside the bundle. Version 10.0.0-preview.3 also records the complete
+public Windows package-status flags before and after a fresh query, content-only
+integrity results, dependency status, package-volume availability, the complete
+Windows build revision, and recent package-related event IDs and HRESULTs.
+
+Event messages are never included. Only the event time, ID, severity, provider,
+and HRESULT values are exported after matching the event locally to the game
+package.
 
 The exporter removes paths, user and computer names, account identifiers,
 tokens, IP addresses, GUIDs, long hexadecimal identifiers, save names, save

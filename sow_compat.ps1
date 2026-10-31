@@ -18,7 +18,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$script:ToolVersion = '10.0.0-preview.2'
+$script:ToolVersion = '10.0.0-preview.3'
 $script:BaseRoot = Join-Path $env:LOCALAPPDATA 'SowCompat'
 $script:BackupRoot = Join-Path $script:BaseRoot 'backups'
 $script:SupportRoot = Join-Path $script:BaseRoot 'support'
@@ -163,24 +163,71 @@ function Select-InstalledProfile {
     return $script:Selected
 }
 
-function Assert-PackageContentIntegrity {
-    param([Parameter(Mandatory = $true)][string]$PackageFullName)
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    $managerType = [Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime]
-    $manager = $managerType::new()
-    $installed = $manager.FindPackageForUser([string]::Empty, $PackageFullName)
-    if ($null -eq $installed -or -not $installed.Status.VerifyIsOK()) { throw 'SOWC_PACKAGE_STATUS_NOT_OK' }
-    $operation = $installed.VerifyContentIntegrityAsync()
+function Get-PackageStatusSummary {
+    param([Parameter(Mandatory = $true)]$Status)
+    $summary = [ordered]@{
+        verify_is_ok = [bool]$Status.VerifyIsOK()
+        data_offline = [bool]$Status.DataOffline
+        dependency_issue = [bool]$Status.DependencyIssue
+        deployment_in_progress = [bool]$Status.DeploymentInProgress
+        disabled = [bool]$Status.Disabled
+        is_partially_staged = [bool]$Status.IsPartiallyStaged
+        license_issue = [bool]$Status.LicenseIssue
+        modified = [bool]$Status.Modified
+        needs_remediation = [bool]$Status.NeedsRemediation
+        not_available = [bool]$Status.NotAvailable
+        package_offline = [bool]$Status.PackageOffline
+        servicing = [bool]$Status.Servicing
+        tampered = [bool]$Status.Tampered
+    }
+    $summary['failure_flags'] = @(Get-PackageStatusFailureNames -Summary $summary)
+    return $summary
+}
+
+function Get-PackageStatusFailureNames {
+    param([Parameter(Mandatory = $true)]$Summary)
+    $names = @('data_offline','dependency_issue','deployment_in_progress','disabled',
+        'is_partially_staged','license_issue','modified','needs_remediation',
+        'not_available','package_offline','servicing','tampered')
+    return @($names | Where-Object { [bool]$Summary[$_] })
+}
+
+function Assert-WinRtPackageStatus {
+    param($Package)
+    if ($null -eq $Package) { throw 'SOWC_PACKAGE_STATUS_NOT_FOUND' }
+    $summary = Get-PackageStatusSummary -Status $Package.Status
+    if ([bool]$summary.verify_is_ok) { return }
+    $failures = @(Get-PackageStatusFailureNames -Summary $summary)
+    if ($failures.Count -eq 0) {
+        throw 'SOWC_PACKAGE_STATUS_INCONSISTENT: VerifyIsOK=False but no public failure flags are set; use Windows Repair and create a support ZIP'
+    }
+    throw "SOWC_PACKAGE_STATUS_NOT_OK: $($failures -join ',')"
+}
+
+function Invoke-WinRtBooleanOperation {
+    param([Parameter(Mandatory = $true)]$Operation)
     $asTask = @([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
         $_.Name -ceq 'AsTask' -and $_.IsGenericMethodDefinition -and $_.GetGenericArguments().Length -eq 1 -and
         $_.GetParameters().Length -eq 1 -and $_.ReturnType.IsGenericType -and
         $_.ReturnType.GetGenericTypeDefinition() -eq [Threading.Tasks.Task``1]
     })
     if ($asTask.Count -ne 1) { throw 'SOWC_WINRT_TASK_BRIDGE_AMBIGUOUS' }
-    $task = $asTask[0].MakeGenericMethod([bool]).Invoke($null, @($operation))
-    if (-not $task.GetAwaiter().GetResult() -or -not $installed.Status.VerifyIsOK()) {
+    $task = $asTask[0].MakeGenericMethod([bool]).Invoke($null, @($Operation))
+    return [bool]$task.GetAwaiter().GetResult()
+}
+
+function Assert-PackageContentIntegrity {
+    param([Parameter(Mandatory = $true)][string]$PackageFullName)
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $managerType = [Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime]
+    $manager = $managerType::new()
+    $installed = $manager.FindPackageForUser([string]::Empty, $PackageFullName)
+    Assert-WinRtPackageStatus -Package $installed
+    if (-not (Invoke-WinRtBooleanOperation -Operation $installed.VerifyContentIntegrityAsync())) {
         throw 'SOWC_PACKAGE_CONTENT_INTEGRITY_FAILED'
     }
+    $refreshed = $manager.FindPackageForUser([string]::Empty, $PackageFullName)
+    Assert-WinRtPackageStatus -Package $refreshed
 }
 
 function Resolve-PackageContentRoot {
@@ -462,6 +509,159 @@ function ConvertTo-SafeSupportText {
     return $safe.Trim()
 }
 
+function Get-SafeWindowsBuildInfo {
+    $version = [Environment]::OSVersion.Version
+    try {
+        $current = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $buildProperty = $current.PSObject.Properties['CurrentBuildNumber']
+        if ($null -eq $buildProperty) { throw 'CurrentBuildNumber unavailable' }
+        $build = [int]$buildProperty.Value
+        $ubrProperty = $current.PSObject.Properties['UBR']
+        $displayProperty = $current.PSObject.Properties['DisplayVersion']
+        $editionProperty = $current.PSObject.Properties['EditionID']
+        $typeProperty = $current.PSObject.Properties['InstallationType']
+        $ubr = if ($null -eq $ubrProperty) { 0 } else { [int]$ubrProperty.Value }
+        return [ordered]@{
+            full_build = '{0}.{1}.{2}.{3}' -f $version.Major, $version.Minor, $build, $ubr
+            build_number = $build
+            update_build_revision = $ubr
+            display_version = if ($null -eq $displayProperty) { $null } else { [string]$displayProperty.Value }
+            edition_id = if ($null -eq $editionProperty) { $null } else { [string]$editionProperty.Value }
+            installation_type = if ($null -eq $typeProperty) { $null } else { [string]$typeProperty.Value }
+        }
+    } catch {
+        return [ordered]@{
+            full_build = $version.ToString()
+            build_number = $version.Build
+            update_build_revision = $version.Revision
+            display_version = $null
+            edition_id = $null
+            installation_type = $null
+        }
+    }
+}
+
+function Get-SafePackageVolumeSummary {
+    param($PowerShellPackage)
+    $summary = [ordered]@{ matched = $false; is_offline = $null; is_system_volume = $null }
+    if ($null -eq $PowerShellPackage -or [string]::IsNullOrWhiteSpace([string]$PowerShellPackage.InstallLocation)) {
+        return $summary
+    }
+    try {
+        $install = [IO.Path]::GetFullPath([string]$PowerShellPackage.InstallLocation).TrimEnd('\') + '\'
+        foreach ($volume in @(Get-AppxVolume -ErrorAction Stop)) {
+            if ([string]::IsNullOrWhiteSpace([string]$volume.PackageStorePath)) { continue }
+            $store = [IO.Path]::GetFullPath([string]$volume.PackageStorePath).TrimEnd('\') + '\'
+            if ($install.StartsWith($store, [StringComparison]::OrdinalIgnoreCase)) {
+                $summary.matched = $true
+                $summary.is_offline = [bool]$volume.IsOffline
+                $summary.is_system_volume = [bool]$volume.IsSystemVolume
+                break
+            }
+        }
+    } catch {
+        $summary.matched = $false
+    }
+    return $summary
+}
+
+function Get-SafePackageDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageFullName,
+        $PowerShellPackage
+    )
+    $result = [ordered]@{
+        current_user_registered = $false
+        powershell_status = if ($null -eq $PowerShellPackage) { $null } else { [string]$PowerShellPackage.Status }
+        signature_kind = if ($null -eq $PowerShellPackage) { $null } else { [string]$PowerShellPackage.SignatureKind }
+        is_development_mode = if ($null -eq $PowerShellPackage) { $null } else { [bool]$PowerShellPackage.IsDevelopmentMode }
+        is_partially_staged = if ($null -eq $PowerShellPackage) { $null } else { [bool]$PowerShellPackage.IsPartiallyStaged }
+        volume = Get-SafePackageVolumeSummary -PowerShellPackage $PowerShellPackage
+        initial_status = $null
+        content_integrity_ok = $null
+        refreshed_status = $null
+        dependencies = @()
+        diagnostic_error = $null
+    }
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $managerType = [Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime]
+        $manager = $managerType::new()
+        $installed = $manager.FindPackageForUser([string]::Empty, $PackageFullName)
+        if ($null -eq $installed) { return $result }
+        $result.current_user_registered = $true
+        $result.initial_status = Get-PackageStatusSummary -Status $installed.Status
+        try {
+            $result.content_integrity_ok = Invoke-WinRtBooleanOperation -Operation $installed.VerifyContentIntegrityAsync()
+        } catch {
+            $result.content_integrity_ok = $null
+        }
+        $refreshed = $manager.FindPackageForUser([string]::Empty, $PackageFullName)
+        if ($null -ne $refreshed) {
+            $result.refreshed_status = Get-PackageStatusSummary -Status $refreshed.Status
+        }
+        $dependencies = New-Object 'Collections.Generic.List[object]'
+        foreach ($dependency in @($installed.Dependencies | Sort-Object { [string]$_.Id.Name })) {
+            $dependencyVersion = $dependency.Id.Version
+            $dependencies.Add([ordered]@{
+                name = [string]$dependency.Id.Name
+                version = ('{0}.{1}.{2}.{3}' -f $dependencyVersion.Major, $dependencyVersion.Minor,
+                    $dependencyVersion.Build, $dependencyVersion.Revision)
+                architecture = [string]$dependency.Id.Architecture
+                signature_kind = [string]$dependency.SignatureKind
+                is_framework = [bool]$dependency.IsFramework
+                is_optional = [bool]$dependency.IsOptional
+                is_resource_package = [bool]$dependency.IsResourcePackage
+                status = Get-PackageStatusSummary -Status $dependency.Status
+            })
+        }
+        $result.dependencies = $dependencies.ToArray()
+    } catch {
+        $result.diagnostic_error = ConvertTo-SafeSupportText (($_.Exception.Message -split ':')[0])
+    }
+    return $result
+}
+
+function Get-SafeAppxEventSummary {
+    param([string[]]$PackageTokens)
+    $logs = @(
+        'Microsoft-Windows-AppXDeploymentServer/Operational',
+        'Microsoft-Windows-AppModel-Runtime/Admin',
+        'Microsoft-Windows-AppxPackaging/Operational'
+    )
+    $result = [ordered]@{ window_hours = 24; messages_included = $false; logs = [ordered]@{} }
+    $start = (Get-Date).AddHours(-24)
+    $safeTokens = @($PackageTokens | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    foreach ($log in $logs) {
+        $items = New-Object 'Collections.Generic.List[object]'
+        $available = $true
+        try {
+            foreach ($event in @(Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $start } -MaxEvents 250 -ErrorAction Stop)) {
+                $message = [string]$event.Message
+                $relevant = $false
+                foreach ($token in $safeTokens) {
+                    if ($message.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $relevant = $true; break }
+                }
+                if (-not $relevant) { continue }
+                $hresults = @([regex]::Matches($message, '(?i)\b0x[0-9a-f]{8}\b') |
+                    ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
+                $items.Add([ordered]@{
+                    time_utc = $event.TimeCreated.ToUniversalTime().ToString('o')
+                    event_id = [int]$event.Id
+                    level = [int]$event.Level
+                    provider = [string]$event.ProviderName
+                    hresults = $hresults
+                })
+                if ($items.Count -ge 20) { break }
+            }
+        } catch {
+            $available = $false
+        }
+        $result.logs[$log] = [ordered]@{ available = $available; events = $items.ToArray() }
+    }
+    return $result
+}
+
 function Get-SafeJournalSummary {
     $summary = [ordered]@{ present = $false; stage = $null; last_hresult = $null }
     $journalPath = Join-Path $script:BaseRoot 'active.journal'
@@ -532,10 +732,21 @@ function Write-SupportBundle {
     $packageVersion = $null
     $wgs = $null
     $detectionError = $null
+    $packageDiagnostics = $null
+    $packageTokens = @()
     try {
         $selection = Select-InstalledProfile
         $profileId = [string]$selection.Profile.Data.id
         $packageVersion = [string]$selection.Package.Version
+        $packageTokens = @(
+            [string]$selection.Profile.Data.package_name,
+            [string]$selection.Profile.Data.package_family_name,
+            [string]$selection.Profile.Data.package_full_name,
+            'WB-Kraken',
+            'ShadowOfWar'
+        )
+        $packageDiagnostics = Get-SafePackageDiagnostics -PackageFullName ([string]$selection.Package.PackageFullName) `
+            -PowerShellPackage $selection.Package
         $wgs = Get-SafeWgsSnapshot
     } catch {
         $detectionError = ConvertTo-SafeSupportText (($_.Exception.Message -split ':')[0])
@@ -558,14 +769,17 @@ function Write-SupportBundle {
     }
     $journal = Get-SafeJournalSummary
     $runEvidence = @(Get-SafeRunEvidenceSummary)
+    $windows = Get-SafeWindowsBuildInfo
+    $appxEvents = Get-SafeAppxEventSummary -PackageTokens $packageTokens
     $bundleId = [Guid]::NewGuid().ToString('N').Substring(0, 12)
     $generated = [DateTime]::UtcNow
     $data = [ordered]@{
-        schema = 2
+        schema = 3
         bundle_id = $bundleId
         tool_version = $script:ToolVersion
         generated_utc = $generated.ToString('o')
-        windows_build = [Environment]::OSVersion.Version.ToString()
+        windows_build = [string]$windows.full_build
+        windows = $windows
         os_64_bit = [Environment]::Is64BitOperatingSystem
         process_64_bit = [Environment]::Is64BitProcess
         powershell_version = $PSVersionTable.PSVersion.ToString()
@@ -573,6 +787,8 @@ function Write-SupportBundle {
         profile_id = $profileId
         package_version = $packageVersion
         package_process_running = (@(Get-Process ShadowOfWar -ErrorAction SilentlyContinue).Count -gt 0)
+        package_diagnostics = $packageDiagnostics
+        appx_events = $appxEvents
         network_available = [Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable()
         services = $services
         journal = $journal
@@ -583,7 +799,7 @@ function Write-SupportBundle {
         detection_error = $detectionError
         activity_log_included = (-not [string]::IsNullOrWhiteSpace($activityText))
         detected_error_codes = $errorCodes
-        privacy = 'No paths, user or computer names, account identifiers, tokens, IP addresses, save names, save hashes, or save contents are included.'
+        privacy = 'No event messages, paths, user or computer names, account identifiers, tokens, IP addresses, save names, save hashes, or save contents are included.'
     }
 
     $stage = Join-Path $script:SupportRoot ('.stage-' + [Guid]::NewGuid().ToString('N'))
@@ -638,7 +854,7 @@ function Invoke-Install {
     $gui=Join-Path $PSScriptRoot 'SowCompat.exe';Assert-RegularFile $gui
     $sourceRoot=[IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\');$destinationRoot=[IO.Path]::GetFullPath($app).TrimEnd('\')
     if(-not $sourceRoot.Equals($destinationRoot,[StringComparison]::OrdinalIgnoreCase)){
-        foreach($name in @('SowCompat.exe','g.exe','sow_compat.ps1','README.md','LICENSE','SECURITY.md','THREAT-MODEL.md')){$source=Join-Path $PSScriptRoot $name;if(Test-Path -LiteralPath $source -PathType Leaf){Copy-Item -LiteralPath $source -Destination (Join-Path $app $name) -Force}}
+        foreach($name in @('SowCompat.exe','g.exe','sow_compat.ps1','README.md','USER-GUIDE.md','SUPPORT.md','LICENSE','SECURITY.md','THREAT-MODEL.md')){$source=Join-Path $PSScriptRoot $name;if(Test-Path -LiteralPath $source -PathType Leaf){Copy-Item -LiteralPath $source -Destination (Join-Path $app $name) -Force}}
         $destinationProfiles=Join-Path $app 'profiles';if(-not(Test-Path -LiteralPath $destinationProfiles)){[void](New-Item -ItemType Directory -Path $destinationProfiles)}
         Copy-Item -Path (Join-Path $script:ProfilesRoot '*.json') -Destination $destinationProfiles -Force
     }
@@ -668,6 +884,10 @@ function Invoke-SelfTest {
     $redacted=ConvertTo-SafeSupportText $redactionFixture
     foreach($secret in @('C:\Users\Private','user@example.com','S-1-5-21-111-222-333-1001','1234567890123456','192.168.1.9','0123456789abcdef0123456789abcdef')){if($redacted.Contains($secret)){throw 'SOWC_SELFTEST_SUPPORT_REDACTION_LEAK'}}
     foreach($expected in @('SOWC_TEST_FAILURE','<PATH>','<EMAIL>','<SID>','<ACCOUNT_ID>','<IP_ADDRESS>','<REDACTED_HEX>')){if(-not$redacted.Contains($expected)){throw "SOWC_SELFTEST_SUPPORT_REDACTION_MISSING: $expected"}}
+    $statusFixture=[ordered]@{verify_is_ok=$false;data_offline=$false;dependency_issue=$true;deployment_in_progress=$false;disabled=$false;is_partially_staged=$false;license_issue=$false;modified=$false;needs_remediation=$false;not_available=$false;package_offline=$false;servicing=$false;tampered=$true}
+    $statusFailures=@(Get-PackageStatusFailureNames -Summary $statusFixture)
+    if ($statusFailures.Count -ne 2 -or $statusFailures[0] -cne 'dependency_issue' -or
+        $statusFailures[1] -cne 'tampered') { throw 'SOWC_SELFTEST_PACKAGE_STATUS_SUMMARY' }
     Write-Host 'SELFTEST_OK: native, profile-integrity, WGS mutation, and support-redaction tests passed; no package or live WGS changed.' -ForegroundColor Green
 }
 

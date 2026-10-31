@@ -1,6 +1,6 @@
 # Validation status
 
-Last updated: 2026-10-19 (Europe/Brussels).
+Last updated: 2026-10-31 (Europe/Brussels).
 
 ## Completed
 
@@ -29,6 +29,12 @@ Last updated: 2026-10-19 (Europe/Brussels).
   passed on Windows build 26200.9711.
 - Search audit found no personal path, XUID, old recovery nonce, fixed drive, or
   private save hash in public source/docs.
+- Schema-3 support export recorded complete public package-status flags before
+  and after re-query, dependency health, content-only integrity, package-volume
+  availability, the full Windows build revision, and privacy-safe AppX event
+  metadata without exporting event messages.
+- Schema-3 support JSON and ZIP checksums passed; a privacy scan found no user
+  name, computer name, profile path, or WindowsApps path in the exported report.
 
 ## Required before stable release
 
